@@ -1,1 +1,72 @@
-Def_CVaR_model
+import pyomo.environ as pyo
+
+def create_cvar_model(assets, scenarios, r, p, mu, mu0, beta):
+    
+    # 创建具体模型对象
+    model = pyo.ConcreteModel(name="CVaR_Model")
+
+    # === Sets ===
+    # 定义资产集合（A）和情景集合（T）
+    model.ASSETS = pyo.Set(initialize=assets)
+    model.SCENARIOS = pyo.Set(initialize=scenarios)
+
+    # === Parameters ===
+    # r[t, j]: 情景 t 下资产 j 的收益率
+    model.r = pyo.Param(model.SCENARIOS, model.ASSETS, initialize=r)
+    # p[t]: 情景 t 的概率（∑p[t] = 1）
+    model.p = pyo.Param(model.SCENARIOS, initialize=p)
+    # mu[j]: 资产 j 的期望收益
+    model.mu = pyo.Param(model.ASSETS, initialize=mu)
+    # mu0: 投资组合期望收益的最小要求
+    model.mu0 = pyo.Param(initialize=mu0)
+    # beta: CVaR 的置信水平，例如 0.05
+    model.beta = pyo.Param(initialize=beta)
+
+    # === Decision variables ===
+    # x[j]: 资产 j 的投资比例，取值范围 [0, 1]
+    def bound_rule(m, j):
+        return (0.0, 1.0)
+    model.x = pyo.Var(model.ASSETS, bounds=bound_rule)
+
+    # η: CVaR 的 VaR 部分（CVaR = η + tail expectation）
+    model.eta = pyo.Var(domain=pyo.Reals)
+    # d[t]: 情景 t 下的超额损失（尾部分布），非负变量
+    model.d = pyo.Var(model.SCENARIOS, domain=pyo.NonNegativeReals)
+
+    # === Expressions ===
+    # y[t]: 情景 t 下的投资组合总收益
+    def y_rule(m, t):
+        return sum(m.r[t, j] * m.x[j] for j in m.ASSETS)
+    model.y = pyo.Expression(model.SCENARIOS, rule=y_rule)
+
+    # portfolio_return: 投资组合期望收益（加权平均）
+    model.portfolio_return = pyo.Expression(
+        expr=sum(model.mu[j] * model.x[j] for j in model.ASSETS)
+    )
+
+    # === Objective: Maximize CVaR dual form ===
+    # 最大化 CVaR = η - 1/β * ∑ p[t] * d[t]
+    def obj_rule(m):
+        return m.eta - (1 / m.beta) * sum(m.p[t] * m.d[t] for t in m.SCENARIOS)
+    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)
+
+    # === Constraints ===
+
+    # CVaR约束：d[t] ≥ η - y[t]，表示损失超出 VaR 部分的超额
+    def cvar_constraint_rule(m, t):
+        return m.d[t] >= m.eta - m.y[t]
+    model.cvar_constraint = pyo.Constraint(model.SCENARIOS, rule=cvar_constraint_rule)
+
+    # 期望收益约束：投资组合的期望收益 ≥ mu0
+    def return_constraint_rule(m):
+        return m.portfolio_return >= m.mu0
+    model.min_return = pyo.Constraint(rule=return_constraint_rule)
+
+    # 预算约束：所有投资比例之和 = 1（即全投资）
+    def budget_constraint_rule(m):
+        return sum(m.x[j] for j in m.ASSETS) == 1
+    model.budget = pyo.Constraint(rule=budget_constraint_rule)
+
+    # 返回完整模型
+    return model
+
