@@ -1,0 +1,71 @@
+import numpy as np
+import pandas as pd
+import pyomo.environ as pyo
+from pyomo.environ import SolverFactory
+from Def_CVaR import create_cvar_model
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# === Parameter list ===
+mu0_list = [round(x, 2) for x in np.arange(0.15, 0.71, 0.01)]
+#mu0_list = [0.16]
+beta_list = [0.01, 0.025, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50]
+tickers = ['AMC', 'AMZN', 'DUK', 'GOOGL', 'GS', 'JNJ', 'JPM', 'KO', 'TSLA', 'VRTX']
+assets = list(range(len(tickers)))
+
+# === Load annual return data ===
+yearly_returns = np.load("yearly_scenarios.npy")  # shape: (10000, 10)
+num_scenarios, num_assets = yearly_returns.shape
+scenarios = list(range(num_scenarios))
+
+# === Model input preparation ===
+r = {(i, j): yearly_returns[i, j] for i in scenarios for j in assets}
+p = {t: 1.0 / num_scenarios for t in scenarios}
+mu = {j: float(np.mean(yearly_returns[:, j])) for j in assets}
+
+# === Initialize result matrix ===
+cvar_matrix = np.full((len(mu0_list), len(beta_list)), np.nan)
+mean_return_matrix = np.full((len(mu0_list), len(beta_list)), np.nan)
+
+# === Gurobi Solver ===
+solver = SolverFactory('gurobi')
+
+# === Solution ===
+for i, mu0 in enumerate(mu0_list):
+    for j, beta in enumerate(beta_list):
+        mu0 = float (mu0)
+        beta = float (beta)
+        print(f"Solving for mu0 = {mu0:.2f}, beta = {beta:.3f} ...")
+        model = create_cvar_model(assets, scenarios, r, p, mu, mu0, beta)
+        result = solver.solve(model, tee=False)
+
+        if result.solver.status == pyo.SolverStatus.ok and result.solver.termination_condition == pyo.TerminationCondition.optimal:
+            cvar_matrix[i, j] = pyo.value(model.obj)
+            mean_return_matrix[i, j] = pyo.value(model.portfolio_return)
+
+# === Format as a percentage string ===
+def format_percent_matrix(matrix):
+    return np.vectorize(lambda x: f"{x * 100:.2f}%" if not np.isnan(x) else "NoFeasible")(matrix)
+
+# === Convert to DataFrame and add row and column labels ===
+mean_return_df = pd.DataFrame(
+    format_percent_matrix(mean_return_matrix),
+    index=[f"{v:.2f}" for v in mu0_list],
+    columns=[f"{b:.3f}" for b in beta_list]
+)
+
+cvar_df = pd.DataFrame(
+    format_percent_matrix(cvar_matrix),
+    index=[f"{v:.2f}" for v in mu0_list],
+    columns=[f"{b:.3f}" for b in beta_list]
+)
+
+# === Print results ===
+print("\n📈 Yearly Expected Return Matrix (%):")
+print(mean_return_df)
+
+print("\n⚠️ Yearly CVaR Matrix (%):")
+print(cvar_df)
+
+# === Optional Save ===
+np.save("CVaR_results.npy", cvar_matrix)
