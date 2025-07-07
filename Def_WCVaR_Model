@@ -1,0 +1,54 @@
+import pyomo.environ as pyo
+
+def create_wcvar_model(assets, scenarios, r, p, mu, mu0, beta_list, weight_list):
+    
+    model = pyo.ConcreteModel(name="WCVaR_Model")
+
+    # === Sets ===
+    model.ASSETS = pyo.Set(initialize=assets)
+    model.SCENARIOS = pyo.Set(initialize=scenarios)
+    model.LEVELS = pyo.Set(initialize=list(range(len(beta_list))))
+
+    # === Parameters ===
+    model.r = pyo.Param(model.SCENARIOS, model.ASSETS, initialize=r)
+    model.p = pyo.Param(model.SCENARIOS, initialize=p)
+    model.mu = pyo.Param(model.ASSETS, initialize=mu)
+    model.mu0 = pyo.Param(initialize=mu0)
+    model.beta = pyo.Param(model.LEVELS, initialize={h: beta_list[h] for h in range(len(beta_list))})
+    model.weight = pyo.Param(model.LEVELS, initialize={h: weight_list[h] for h in range(len(weight_list))})
+
+    # === Decision variables ===
+    model.x = pyo.Var(model.ASSETS, bounds=(0.0, 1.0))
+    model.eta = pyo.Var(model.LEVELS, domain=pyo.Reals)
+    model.d = pyo.Var(model.LEVELS, model.SCENARIOS, domain=pyo.NonNegativeReals)
+
+    # === Expressions ===
+    def y_rule(m, t):
+        return sum(m.r[t, j] * m.x[j] for j in m.ASSETS)
+    model.y = pyo.Expression(model.SCENARIOS, rule=y_rule)
+    model.portfolio_return = pyo.Expression(expr=sum(model.mu[j] * model.x[j] for j in model.ASSETS))
+
+    # === Objective ===
+    def obj_rule(m):
+        return sum(
+            m.weight[h] * (
+                m.eta[h] - (1 / m.beta[h]) * sum(m.p[t] * m.d[h, t] for t in m.SCENARIOS)
+            )
+            for h in m.LEVELS
+        )
+    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)
+
+    # === Constraints ===
+    def cvar_constraint_rule(m, h, t):
+        return m.d[h, t] >= m.eta[h] - m.y[t]
+    model.cvar_constraint = pyo.Constraint(model.LEVELS, model.SCENARIOS, rule=cvar_constraint_rule)
+
+    def return_constraint_rule(m):
+        return m.portfolio_return >= m.mu0
+    model.min_return = pyo.Constraint(rule=return_constraint_rule)
+
+    def budget_constraint_rule(m):
+        return sum(m.x[j] for j in m.ASSETS) == 1
+    model.budget = pyo.Constraint(rule=budget_constraint_rule)
+
+    return model
