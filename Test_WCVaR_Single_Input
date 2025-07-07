@@ -1,0 +1,56 @@
+import numpy as np
+import pyomo.environ as pyo
+from Def_WCVaR import create_wcvar_model
+import matplotlib.pyplot as plt
+
+# Stock List
+tickers = ['AMC', 'AMZN', 'DUK', 'GOOGL', 'GS', 'JNJ', 'JPM', 'KO', 'TSLA', 'VRTX']
+assets = list(range(len(tickers)))
+
+# === Step 1: Load annual return scenario data ===
+yearly_returns = np.load("yearly_scenarios.npy")  # shape: (10000, 10)
+num_scenarios, num_assets = yearly_returns.shape
+scenarios = list(range(num_scenarios))
+
+# === Step 2: Prepare model parameters ===
+r = {(t, j): float(yearly_returns[t, j]) for t in scenarios for j in assets}
+p = {t: 1.0 / num_scenarios for t in scenarios}
+mu = {j: float(np.mean(yearly_returns[:, j])) for j in assets}
+mu0 = 0.40  # Annual return target (customizable)
+
+# WCVaR parameters
+beta_list = [0.01, 0.05, 0.30, 0.40]
+weight_list = [0.1, 0.2, 0.3, 0.4]
+
+# === Step 3: Build and solve the model ===
+model = create_wcvar_model(assets, scenarios, r, p, mu, mu0, beta_list, weight_list)
+solver = pyo.SolverFactory('gurobi') 
+results = solver.solve(model, tee=False)
+
+# === Step 4: Print optimization results ===
+x = [round(pyo.value(model.x[j]), 6) for j in assets]
+ret = round(pyo.value(model.portfolio_return), 6)
+wcvar_model_value = round(pyo.value(model.obj), 6)
+
+print("\n📊 Optimal Portfolio Weights:")
+for i, weight in enumerate(x):
+    print(f"{tickers[i]}: {weight}")
+    
+print(f"\n📈 Expected annual return of portfolio: {ret:.2%}")
+print(f"⚠️ WCVaR, model output): {wcvar_model_value:.2%}")
+
+# === Visualizing Portfolio Weights ===
+plt.figure(figsize=(10, 5))
+plt.bar(tickers, x, color='#377eb8')
+plt.title("Optimal Portfolio Weights (WCVaR)", fontsize=14)
+plt.xlabel("Asset", fontsize=12)
+plt.ylabel("Weight", fontsize=12)
+plt.ylim(0, max(x) * 1.2)
+plt.grid(axis='y', linestyle='--', alpha=0.5)
+for i, weight in enumerate(x):
+    plt.text(i, weight + 0.005, f"{weight:.2%}", ha='center', va='bottom', fontsize=9)
+
+plt.tight_layout()
+plt.savefig("wcvar_weights_barplot.pdf", dpi=300)
+plt.show()
+
