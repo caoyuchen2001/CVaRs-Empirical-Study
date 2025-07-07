@@ -1,0 +1,60 @@
+import numpy as np
+import pyomo.environ as pyo
+from Def_CVaR import create_cvar_model
+from pyomo.environ import SolverFactory
+import matplotlib.pyplot as plt
+
+# Parameters
+mu0 = 0.47   # Minimum expected annual return
+beta = 0.01     # CVaR tolerance level
+tickers = ['AMC', 'AMZN', 'DUK', 'GOOGL', 'GS', 'JNJ', 'JPM', 'KO', 'TSLA', 'VRTX']
+
+# === Step 1: Load annual return scenario data ===
+yearly_returns = np.load("yearly_scenarios.npy")  # shape: (10000, 10)
+num_scenarios, num_assets = yearly_returns.shape
+
+# === Step 2: Prepare model parameters ===
+assets = list(range(num_assets))      # Asset set A = {0,...,9}
+scenarios = list(range(num_scenarios)) # scenario set T = {0,...,9999}
+
+# The return of each asset in each scenario r[t, j]
+r = {(i, j): yearly_returns[i, j] for i in scenarios for j in assets}
+
+# Uniform scenario probability
+p = {t: 1.0 / num_scenarios for t in scenarios}
+
+# The expected annual return of each asset
+mu = {j: float(np.mean(yearly_returns[:, j])) for j in assets}
+
+# === Step 3: Build and solve the CVaR model ===
+model = create_cvar_model(assets, scenarios, r, p, mu, mu0, beta)
+solver = SolverFactory('gurobi')
+results = solver.solve(model, tee=False)
+
+# === Step 4: Extract and print results ===
+weights = [round(pyo.value(model.x[j]), 6) for j in assets]
+expected_return = round(pyo.value(model.portfolio_return), 6)
+cvar_value = round(pyo.value(model.obj), 6)
+
+print("Portfolio allocation:")
+for i, weight in enumerate(weights):
+    print(f"{tickers[i]}: {weight}")
+
+print("\n")
+print("Expected annual return:", expected_return)
+print("CVaR (annual):", cvar_value)
+
+# === Visualizing Portfolio Weights ===
+plt.figure(figsize=(10, 5))
+plt.bar(tickers, weights, color='#377eb8')
+plt.title("Optimal Portfolio Weights (CVaR)", fontsize=14)
+plt.xlabel("Asset", fontsize=12)
+plt.ylabel("Weight", fontsize=12)
+plt.ylim(0, max(weights) * 1.2)
+plt.grid(axis='y', linestyle='--', alpha=0.5)
+
+for i, weight in enumerate(weights):
+    plt.text(i, weight + 0.005, f"{weight:.2%}", ha='center', va='bottom', fontsize=9)
+
+plt.tight_layout()
+plt.show()
