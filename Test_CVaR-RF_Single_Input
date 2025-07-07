@@ -1,0 +1,66 @@
+import numpy as np
+import pyomo.environ as pyo
+from Def_CVaR-RF import create_cvar_rf_model
+import matplotlib.pyplot as plt
+
+# === Parameters ===
+mu0 = 0.47   # Minimum portfolio annual expected return
+beta = 0.01   # CVaR tolerance level
+rf_return = 0.04  # Annual return of risk-free assets (4%)
+
+# === Stock list (risk-free assets are not included) ===
+tickers = ['AMC', 'AMZN', 'DUK', 'GS', 'JNJ', 'KO', 'GOOGL', 'PEP', 'TSLA', 'VRTX']
+assets_risky = list(range(len(tickers)))
+assets_rf = [len(tickers)]  # The risk-free asset number is 10
+
+# === Step 1: Load annual return scenario data and add risk-free asset column ===
+yearly_returns = np.load("yearly_scenarios.npy")  # (10000, 10)
+num_scenarios, num_assets = yearly_returns.shape
+scenarios = list(range(num_scenarios))
+
+# Add risk-free asset return column
+rf_column = np.full((num_scenarios, 1), rf_return)  # Fixed to 4%
+returns_with_rf = np.hstack([yearly_returns, rf_column])  # (10000, 11)
+
+# === Step 2: Construct model input parameters ===
+r = {(t, j): float(returns_with_rf[t, j]) for t in scenarios for j in range(num_assets)} # Risky assets
+p = {t: 1.0 / num_scenarios for t in scenarios}  # Scenario Probability
+mu = {j: float(np.mean(returns_with_rf[:, j])) for j in assets_risky}
+mu_rf = {assets_rf[0]: rf_return}
+
+# === Step 3: Build and solve the model ===
+model = create_cvar_rf_model(assets_risky, assets_rf, scenarios, r, p, mu, mu_rf, mu0, beta)
+solver = pyo.SolverFactory('gurobi')
+results = solver.solve(model, tee=False)
+
+# === Step 4: Print results ===
+x_risky = [round(pyo.value(model.x[j]), 6) for j in assets_risky]
+x_rf = [round(pyo.value(model.x0[j]), 6) for j in assets_rf]
+portfolio_return = round(pyo.value(model.portfolio_return), 6)
+cvar_value = round(pyo.value(model.obj), 6)
+
+print("📊 Weights:")
+for i, weight in enumerate(x_risky):
+    print(f"{tickers[i]}: {weight}")
+print("\n")
+print(f"Risk-free asset weight: {x_rf[0]}")
+print(f"📈 Expected annual return of Portfolio: {portfolio_return:.2%}")
+print(f"⚠️ CVaR-RF value: {cvar_value:.2%}")
+
+# === Step 5: Visualization ===
+plt.figure(figsize=(10, 5))
+bars = plt.bar(tickers + ['RF'], x_risky + x_rf, color='steelblue')
+plt.title("Optimal Portfolio Allocation (CVaR + Risk-Free)")
+plt.xlabel("Assets")
+plt.ylabel("Weight")
+plt.ylim(0, max(x_risky + x_rf) * 1.2)
+plt.grid(axis='y', linestyle='--', alpha=0.5)
+
+for bar in bars:
+    height = bar.get_height()
+    if height > 0:
+        plt.text(bar.get_x() + bar.get_width() / 2, height + 0.005,
+                 f"{height:.3f}", ha='center', va='bottom', fontsize=9)
+
+plt.tight_layout()
+plt.show()
