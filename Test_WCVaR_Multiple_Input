@@ -1,0 +1,69 @@
+import numpy as np
+import pyomo.environ as pyo
+import pandas as pd
+from Def_WCVaR import create_wcvar_model
+
+# === Stock list ===
+tickers = ['AMC', 'AMZN', 'DUK', 'GOOGL', 'GS', 'JNJ', 'JPM', 'KO', 'TSLA', 'VRTX']
+assets = list(range(len(tickers)))
+
+# === Load annual return scenarios data ===
+yearly_returns = np.load("yearly_scenarios.npy")  # shape = (10000, 10)
+num_scenarios, num_assets = yearly_returns.shape
+scenarios = list(range(num_scenarios))
+
+# === Model input ===
+r = {(t, j): yearly_returns[t, j] for t in scenarios for j in assets}
+p = {t: 1.0 / num_scenarios for t in scenarios}
+mu = {j: float(np.mean(yearly_returns[:, j])) for j in assets}
+
+# === Parameters ===
+mu0_list = [0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70]
+beta_vector_list = [
+    [0.01, 0.025, 0.05, 0.10],
+    [0.01, 0.05, 0.20, 0.40],
+    [0.025, 0.05, 0.10, 0.30],
+]
+weight_vector = [0.4, 0.3, 0.2, 0.1]
+
+# === Initialize result matrix ===
+wcvar_matrix = np.full((len(mu0_list), len(beta_vector_list)), np.nan)
+
+# === Solve ===
+solver = pyo.SolverFactory('gurobi')
+
+for i, mu0 in enumerate(mu0_list):
+    for j, beta_list in enumerate(beta_vector_list):
+        try:
+            print(f"Solving for mu0 = {mu0:.2f}, beta = {beta_list}")
+            model = create_wcvar_model(assets, scenarios, r, p, mu, mu0, beta_list, weight_vector)
+            result = solver.solve(model, tee=False)
+
+            if result.solver.status == pyo.SolverStatus.ok and result.solver.termination_condition == pyo.TerminationCondition.optimal:
+                wcvar_value = pyo.value(model.obj)
+                wcvar_matrix[i, j] = wcvar_value
+                print(f"✅ WCVaR = {wcvar_value:.2%}")
+            else:
+                print("⚠️ Infeasible solution.")
+        except Exception as e:
+            print(f"❌ Error: {e}")
+
+# === Format output DataFrame ===
+def beta_vec_to_str(beta_list):
+    return "[" + ", ".join(f"{b:.3f}" for b in beta_list) + "]"
+
+column_labels = [beta_vec_to_str(bv) for bv in beta_vector_list]
+row_labels = [f"{v:.2f}" for v in mu0_list]
+
+wcvar_df = pd.DataFrame(
+    np.vectorize(lambda x: f"{x*100:.2f}%" if not np.isnan(x) else "")(wcvar_matrix),
+    index=row_labels,
+    columns=column_labels
+)
+
+print("\n📊 Weighted CVaR Result Matrix (%):")
+print(wcvar_df)
+
+# === Optional save ===
+wcvar_df.to_csv("WCVaR_matrix_results.csv")
+np.save("WCVaR_matrix_raw1.npy", wcvar_matrix)
