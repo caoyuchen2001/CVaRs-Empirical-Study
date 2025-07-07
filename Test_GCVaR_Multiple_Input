@@ -1,0 +1,93 @@
+import pyomo.environ as pyo
+import numpy as np
+import pandas as pd
+from Def_GCVaR import create_gcvar_model
+
+# === Parameters ===
+mu0_list = [0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70]
+beta_list = [0.01, 0.025, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50]
+tickers = ['AMC', 'AMZN', 'DUK', 'GOOGL', 'GS', 'JNJ', 'JPM', 'KO', 'TSLA', 'VRTX']
+assets = list(range(len(tickers)))
+
+# === Load annual return scenario data ===
+yearly_returns = np.load("yearly_scenarios.npy")  # shape: (10000, 10)
+n_scenarios, n_assets = yearly_returns.shape
+scenarios = list(range(n_scenarios))
+
+# === Portfolio Return & Market Grouping ===
+portfolio_returns = yearly_returns @ np.ones(n_assets) / n_assets
+sorted_indices = np.argsort(-portfolio_returns) # Descending
+
+groups = {
+    0: sorted_indices[:5000].tolist(),     
+    1: sorted_indices[5000:9000].tolist(),
+    2: sorted_indices[9000:].tolist()  
+}
+
+weights = {
+    0: 0.2,
+    1: 0.3,
+    2: 0.5
+}
+
+# === Construct model parameters ===
+r = {(i, j): yearly_returns[i, j] for i in scenarios for j in assets}
+p = {t: 1.0 / n_scenarios for t in scenarios}
+mu = {j: float(np.mean(yearly_returns[:, j])) for j in assets}
+
+# === Result ===
+results = []
+
+# === Solve ===
+solver = pyo.SolverFactory('gurobi')
+
+for mu0 in mu0_list:
+    for beta in beta_list:
+        print(f"Solving GCVaR for mu0={mu0:.3f}, beta={beta:.3f}...")
+        model = create_gcvar_model(assets, scenarios, r, p, mu, mu0, beta, groups, weights)
+        result = solver.solve(model, tee=False)
+
+        if result.solver.status == pyo.SolverStatus.ok and result.solver.termination_condition == pyo.TerminationCondition.optimal:
+            gcvar_value = pyo.value(model.obj)
+            expected_return = pyo.value(model.portfolio_return)
+        else:
+            gcvar_value = np.nan
+            expected_return = np.nan
+
+        results.append({
+            'mu0': mu0,
+            'beta': beta,
+            'Expected Return': expected_return,
+            'GCVaR': gcvar_value
+        })
+
+# === Convert to DataFrame ===
+df_results = pd.DataFrame(results)
+
+# === Format and print the result matrix ===
+def format_percent_matrix(matrix):
+    return np.vectorize(lambda x: f"{x * 100:.2f}%" if not np.isnan(x) else "NaN")(matrix)
+
+pivot_gcvar = df_results.pivot(index="mu0", columns="beta", values="GCVaR")
+pivot_return = df_results.pivot(index="mu0", columns="beta", values="Expected Return")
+
+df_gcvar_fmt = pd.DataFrame(
+    format_percent_matrix(pivot_gcvar.values),
+    index=[f"{v:.3f}" for v in pivot_gcvar.index],
+    columns=[f"{b:.3f}" for b in pivot_gcvar.columns]
+)
+
+df_return_fmt = pd.DataFrame(
+    format_percent_matrix(pivot_return.values),
+    index=[f"{v:.3f}" for v in pivot_return.index],
+    columns=[f"{b:.3f}" for b in pivot_return.columns]
+)
+
+print("\n📈 Expected Return Matrix (%):")
+print(df_return_fmt)
+
+print("\n⚠️ GCVaR Matrix (%):")
+print(df_gcvar_fmt)
+
+# === Optional save ===
+np.save("df_gcvar_fmt1.npy", df_gcvar_fmt)
