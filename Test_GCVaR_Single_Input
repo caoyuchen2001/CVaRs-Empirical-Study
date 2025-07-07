@@ -1,0 +1,91 @@
+import pyomo.environ as pyo
+import numpy as np
+import pandas as pd
+from Def_GCVaR import create_gcvar_model
+import matplotlib.pyplot as plt
+
+# === Input parameters ===
+mu0 = 0.40
+beta = 0.20
+
+# === Stock List ===
+tickers = ['AMC', 'AMZN', 'DUK', 'GOOGL', 'GS', 'JNJ', 'JPM', 'KO', 'TSLA', 'VRTX']
+assets = list(range(len(tickers)))
+n_assets = 10
+
+# === Read annual return scenario data ===
+yearly_returns = np.load("yearly_scenarios.npy")  # shape: (10000, 10)
+num_scenarios, num_assets = yearly_returns.shape
+scenarios = list(range(num_scenarios))
+
+# === Grouping ===
+n_scenarios = yearly_returns.shape[0]
+
+# === 2. Calculate the annual return of each scenario (equal weight portfolio) ===
+portfolio_returns = yearly_returns @ np.ones(10) / 10  # shape: (10000,)
+
+# === 3. Sort the index by portfolio return, from high to low ===
+sorted_indices = np.argsort(-portfolio_returns)  # 注意负号，降序排序
+
+# === 4. Grouping: 5000 bull market, 4000 shock, 1000 bear market ===
+groups = {
+    0: sorted_indices[:5000].tolist(), 
+    1: sorted_indices[5000:9000].tolist(), 
+    2: sorted_indices[9000:].tolist() 
+}
+
+# === 5. Assign weights===
+weights = {
+    0: 0.2, 
+    1: 0.3,
+    2: 0.5
+}
+
+# === 6. Print groupping results ===
+print("\n📊 Three market groupping:")
+for g in groups:
+    group_ret = portfolio_returns[groups[g]]
+    print(f"Group {g}: size={len(groups[g])}, mean={np.mean(group_ret):.2%}, std={np.std(group_ret):.2%}")
+
+
+# === Construct r, p, mu parameters ===
+r = {(i, j): yearly_returns[i, j] for i in scenarios for j in assets}
+p = {t: 1.0 / num_scenarios for t in scenarios}
+mu = {j: float(np.mean(yearly_returns[:, j])) for j in assets}
+
+# === Create and solve the GCVaR model ===
+model = create_gcvar_model(assets, scenarios, r, p, mu, mu0, beta, groups, weights)
+solver = pyo.SolverFactory('gurobi')
+results = solver.solve(model, tee=False)
+
+# === Print output ===
+x_opt = [round(pyo.value(model.x[j]), 6) for j in assets]
+portfolio_return = round(pyo.value(model.portfolio_return), 6)
+gcvar_value = round(pyo.value(model.obj), 6)
+
+print("Portfolio allocation:")
+for i, weight in enumerate(x_opt):
+    print(f"{tickers[i]}: {weight}")
+    
+print("\n")
+print(f"Expected annual return: {portfolio_return:.2%}")
+print(f"GCVaR: {gcvar_value:.2%}")
+
+
+# === Visualization ===
+plt.figure(figsize=(10, 5))
+bars = plt.bar(tickers, x_opt, color='steelblue')
+plt.title("Optimal Portfolio Allocation (GCVaR Model)")
+plt.xlabel("Assets")
+plt.ylabel("Weight")
+plt.ylim(0, max(x_opt) * 1.2)
+plt.grid(axis='y', linestyle='--', alpha=0.5)
+
+for bar in bars:
+    height = bar.get_height()
+    if height > 0:
+        plt.text(bar.get_x() + bar.get_width() / 2, height + 0.005,
+                 f"{height:.3f}", ha='center', va='bottom', fontsize=9)
+
+plt.tight_layout()
+plt.show()
