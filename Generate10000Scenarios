@@ -1,0 +1,65 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Stock List
+tickers = ['AMC', 'AMZN', 'DUK', 'GOOGL', 'GS', 'JNJ', 'JPM', 'KO', 'TSLA', 'VRTX']
+
+# Download data
+data = yf.download(tickers, start='2015-01-01', end='2024-12-31')['Close']
+data = data[tickers]
+print(f"Daily price data shape: {data.shape}")  # should be (2515, 10)
+
+# Daily price matrix visualization
+plt.figure(figsize=(14, 6))
+for ticker in tickers:
+    plt.plot(data.index, data[ticker], label=ticker)
+plt.title("Closing Prices (2015–2024)", fontsize=14)
+plt.xlabel("Date")
+plt.ylabel("Close Price (USD)")
+plt.legend(loc='upper left', ncol=2)
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# Calculate daily return
+returns = data.pct_change().dropna()  # Remove the first row of NaN
+print(f"Daily return data shape: {returns.shape}") # should be (2514, 10)
+np.save("2015_2024_RealDailyReturns.npy", returns)
+
+# Define the block-bootstrap function
+def block_bootstrap(returns_df, block_size_range=(35, 40), num_samples=10000, sample_length=252, random_seed=None):
+    if random_seed is not None:
+        np.random.seed(random_seed) # Set the random seed to ensure reproducibility
+        
+    T, N = returns_df.shape # T: time length (number of rows), N: number of assets (number of columns)
+    returns_array = returns_df.to_numpy() # Convert to numpy array for faster processing
+    bootstrapped = []  # Store the final bootstrap sample list
+
+    for _ in range(num_samples):  # Repeatedly generate num_samples samples
+        sampled = []  # Store the spliced ​​blocks in the current sample
+        while len(sampled) < sample_length: # Until the cumulative length exceeds the target length (252 days)
+            block_size = np.random.randint(block_size_range[0], block_size_range[1] + 1) # Randomly choose block length 35-40
+            start_idx = np.random.randint(0, T - block_size)  # Randomly select the starting row index ensuring it does not cross the boundary
+            block = returns_array[start_idx:start_idx + block_size]  # Extract a continuous block
+            sampled.append(block)  # Add this block to the current sample
+        sample_matrix = np.vstack(sampled)[:sample_length]  # After concatenation, take the first 252 rows to form the final sample
+        bootstrapped.append(sample_matrix)  # Add to the total sample list
+
+    return np.array(bootstrapped) # The returned result is a three-dimensional array with a shape of (10000, 252, 10)
+
+# Use the above function to generate bootstrapped daily return data
+bootstrapped_returns = block_bootstrap(returns, random_seed=50)
+# Print the shape of the generated data for confirmation, which should be (10000, 252, 10)
+print("bootstrapped_returns shape:", bootstrapped_returns.shape)
+np.save("bootstrapped_returns2.npy", bootstrapped_returns)
+
+# Calculate the compound annual return of each asset each year: R = ∏(1 + r_t) - 1
+yearly_returns = np.prod(1 + bootstrapped_returns, axis=1) - 1  
+
+# Save as scenario matrix, which can be passed to CVaR solver
+np.save("yearly_scenarios.npy", yearly_returns)
+print("yearly_scenarios shape:", yearly_returns.shape) # shape: (10000, 10)
