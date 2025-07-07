@@ -1,0 +1,66 @@
+import numpy as np
+import pandas as pd
+import pyomo.environ as pyo
+from Def_CVaR-RF import create_cvar_rf_model
+
+# === Parameters ===
+mu0_list = [round(x, 2) for x in np.arange(0.15, 0.71, 0.01)]
+beta_list = [0.01, 0.025, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50]
+rf_return = 0.04  # Annual return of risk-free asset
+
+tickers = ['AMC', 'AMZN', 'DUK', 'GS', 'JNJ', 'KO', 'GOOGL', 'PEP', 'TSLA', 'VRTX']
+assets_risky = list(range(len(tickers)))
+assets_rf = [len(tickers)]
+
+# === Load risky asset return scenarios ===
+yearly_returns = np.load("yearly_scenarios.npy")  # shape: (10000, 10)
+num_scenarios, num_assets = yearly_returns.shape
+scenarios = list(range(num_scenarios))
+
+# === Construct parameters ===
+r = {(t, j): float(yearly_returns[t, j]) for t in scenarios for j in assets_risky}
+p = {t: 1.0 / num_scenarios for t in scenarios}
+mu = {j: float(np.mean(yearly_returns[:, j])) for j in assets_risky}
+mu_rf = {assets_rf[0]: rf_return}
+
+# === Initialize result matrix ===
+results_matrix = np.empty((len(mu0_list), len(beta_list)))
+results_matrix[:] = np.nan
+
+# === solve ===
+solver = pyo.SolverFactory('gurobi')
+
+for i, mu0 in enumerate(mu0_list):
+    for j, beta in enumerate(beta_list):
+        mu0 = float (mu0)
+        beta = float (beta)
+        print(f"Solving for mu0 = {mu0:.2f}, beta = {beta:.3f} ...")
+        model = create_cvar_rf_model(
+            assets_risky=assets_risky,
+            assets_rf=assets_rf,
+            scenarios=scenarios,
+            r=r,
+            p=p,
+            mu=mu,
+            mu_rf=mu_rf,
+            mu0=mu0,
+            beta=beta
+        )
+        result = solver.solve(model, tee=False)
+        if result.solver.termination_condition == pyo.TerminationCondition.optimal:
+            results_matrix[i, j] = pyo.value(model.obj)
+
+# === Format output ===
+def format_percent_matrix(matrix):
+    return np.vectorize(lambda x: f"{x * 100:.2f}%" if not np.isnan(x) else "NaN")(matrix)
+
+cvar_rf_df = pd.DataFrame(
+    format_percent_matrix(results_matrix),
+    index=[f"{v:.2f}" for v in mu0_list],
+    columns=[f"{b:.3f}".rstrip('0').rstrip('.') if '.' in f"{b:.3f}" else str(b) for b in beta_list]
+)
+
+np.save("cvar_rf_df.npy", results_matrix)
+
+print("\n📉 CVaR-RF Matrix (%):")
+print(cvar_rf_df)
